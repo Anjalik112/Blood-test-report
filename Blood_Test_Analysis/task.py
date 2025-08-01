@@ -27,6 +27,7 @@ def create_task(
         inputs={
             "query": "{query}",
             "report_text": "{report_text}",
+            
         },
         async_execution=False,
     )
@@ -38,94 +39,146 @@ def create_task(
 # - Now provides real medical summary and analysis goals.
 help_patients = create_task(
     description="""
-    You have the patient’s full blood report text:
-    
-    {report_text}
-    
-    Follow these steps exactly, and do NOT stop early:
-    
-    1. Run the `blood_report_summary` tool on the full report text.
-    2. Parse the tool result to extract **only those tests labeled as abnormal** (e.g. High, Low, Elevated, Deficiency).
-    4. After all tool calls are completed, combine:
-        - The `blood_report_summary` result
-        
-    into a single, **final answer**.
+You are provided with a patient’s full blood test report:
 
-    IMPORTANT:
-    - Do NOT treat the `blood_report_summary` output as the final answer by itself.
-    - You MUST proceed to `abnormal_info_search` for every abnormal test found.
-    - Your final answer must contain:
-        - the entire `blood report summary`
-        - all article links from `abnormal_info_search`
-    """,
-    expected_output="A clear, concise patient summary with any relevant article links.",
+{report_text}
+
+Steps to follow:
+
+1. Call the `blood_report_summary` tool on the report text.  
+2. From its output, extract:
+   - `full_summary` (the line‑by‑line CBC results with Normal/High/Low flags)  
+   - `details` (the list of strings for each abnormal test, e.g. ["Lymphocytes → elevation", …])  
+3. Construct your final answer exactly in this structure:
+   a) **Full CBC Summary:**  
+      <insert full_summary from the tool>  
+   b) **⚠️ Abnormalities Detected:**  
+      <comma‑separated list of test names from `details`, always including the flags (e.g., "Lymphocytes → elevation")>  
+   c) **🩺 Interpretation (1–2 lines):**  
+      A brief explanation of what these abnormalities collectively suggest (e.g., possible infection, inflammation, allergy, or nutritional deficiency).
+
+Tone:
+- Kind, simple, and conversational as if speaking to a non‑medical patient.
+- Begin with “Dear `user_name`,” and end with a gentle suggestion to discuss with their physician.
+
+IMPORTANT:
+- Do NOT re‑parse the text yourself—use exactly the outputs from `blood_report_summary`.
+- Do NOT include anything beyond the three sections above.
+- Ensure the abnormalities list **always retains both the test name and its flag** as returned.
+""",
+    expected_output=(
+        "Dear `user_name`,\n\n"
+        "🩸Full CBC Summary:\n"
+        "<full_summary from blood_report_summary>\n\n"
+        "⚠️Abnormalities Detected:\n"
+        "`details` (include test names with flags)\n\n"
+        "🩺Interpretation:\n"
+        "<1–2 sentence explanation>\n"
+    ),
     agent=doctor,
 )
+
+
+
 abnormal_task = create_task(
     description="""
-    You have 1 input:
-     1. The full text output from the `blood_report_summary` tool.
-       Do not modify or summarize this text.
+You are given:
+- `details`: a list of abnormal test detail strings (e.g., "Lymphocytes → elevation").
 
-    Your Task:
-     - Call the `abnormal_info_search` tool exactly once, passing:
-        - `summary_text`: the text from the `blood_report_summary` tool 
-    - Then produce a single, combined final answer containing:
-        1. The **exact text** from the `blood_report_summary` tool (do not alter it).
-        2.only the output returned by the `abnormal_info_search` tool.
-    - Do not add any extra commentary, narrative, or formatting beyond these two parts.
-    """,
-    expected_output="A newline-separated list of abnormal test names and their corresponding Mount Sinai Health Library URLs.",
+Your task:
+
+1. Begin with the heading: `⚠️Abnormalities Detected:` followed by a friendly 1-liner.
+
+2. For each entry in `details` (which is always a **string**, not a dictionary), extract:
+   - the test name
+   - the abnormality type (e.g., elevation or deficiency)
+
+3. For each test:
+   - Generate a bullet point in the format: `- <TestName> (<flag>): <brief explanation>`
+   - Use clinical reasoning (in simple, non-technical words) to explain the significance of the abnormality.
+
+4. Then, call `abnormal_info_search(details=...)` with the exact same string list.
+   - This tool returns a list of `TestName: URL` mappings.
+   - Paste the tool's output **verbatim**, under the heading: `🔗 Resources for Understanding`
+
+⚠️ Rules:
+- The `details` input will **always be a list of strings**, like `"Neutrophils → elevation"`, **not dictionaries**.
+- Do **not** modify or format the tool's output.
+- Do **not** include the raw `details` list in the final answer.
+- The output must feel like a helpful summary followed by reference links.
+""",
+    expected_output=(
+        "⚠️Abnormalities Detected:\n"
+        "- <TestName> (<flag>): <brief explanation>\n"
+        "- ...\n\n"
+        "🔗 Resources for Understanding:\n"
+        "<abnormal_info_search tool's output>\n\n"
+    ),
     agent=abnormal_agent,
 )
 
 
+
+
+
 nutrition_analysis = create_task(
     description="""
-    You have two inputs:
-    
-    1. The full text output from the `blood_report_summary` tool.
-       Do not modify or summarize this text.
-    
-    2. The patient's weight in kilograms (numeric value).
-    
-    Your task:
-        
-    - Call the `nutrition_advice` tool exactly once, passing:
-        - `summary_text`: the text from the `blood_report_summary` tool and `abnormal_info_search` tool.
-        - `weight_kg`: the numeric patient weight
-    
-    - Then produce a single, combined final answer containing:
-    
-        1. The **exact text** from the `blood_report_summary` tool (do not alter it).
-        2. A section titled **“Personalized Nutrition Recommendations:”** followed by
-           only the output returned by the `nutrition_advice` tool.
-    
-    - Do not add any extra commentary, narrative, or formatting beyond these two parts.
-    """,
+You have two inputs:
+
+1. `full_summary`: the exact text output from the `blood_report_summary` tool.  
+2. `details`: a list of abnormal test detail strings from `blood_report_summary`.  
+
+Your task:
+
+1. Call the `nutrition_advice` tool exactly once, passing:
+   - `details`: the list of abnormal test detail strings  
+
+2. Then produce a single, combined final answer containing **exactly** these sections, in this order:
+
+---
+
+🥗 Personalized Nutrition Recommendations: 
+<insert the output returned by `nutrition_advice`>  
+
+🧃 General Wellness Tips:
+End with 1–2 friendly, general health tips not specific to the report — such as hydration, seasonal fruits, or reducing processed foods.  
+These should be short, practical, and helpful for most people.
+""",
     expected_output=(
-        "A single combined output consisting of:\n\n"
-        
-        "1. A section titled 'Personalized Nutrition Recommendations:' followed only by "
-        "the text from the nutrition_advice tool."
+        "🥗 Personalized Nutrition Recommendations:\n"
+        "<nutrition_advice tool's output>\n\n"
+        "🧃 General Wellness Tips:\n"
+        "<1–2 friendly, general health suggestions>"
     ),
     agent=nutritionist,
 )
+
+
 exercise_routine = create_task(
     description="""
-    When a user asks for a wellness routine or daily exercise plan:
+When a user asks for a daily exercise or wellness routine:
 
-    1. Ignore any lab reports or other inputs.
-    2. Run the `exercise_advice` tool with no arguments.
-    3. Return the full output of `exercise_advice` as the final answer.
+1. Ignore any lab reports or other medical inputs.
+2. Call the `exercise_advice` tool exactly once, with no arguments.
+   - Note: this tool will also fetch top yoga websites and YouTube videos via the Serper API if `SERPER_API_KEY` is set.
+3. Present its output verbatim under a clear, emoji‑headed section.
 
-    IMPORTANT:
-    - Do NOT attempt to parse any blood report or other medical data.
-    - Your final answer must be the unmodified suggestions from `exercise_advice`.
-    """,
-    expected_output="A friendly, comprehensive daily exercise and wellness routine.",
+Format your final answer exactly as follows:
+
+🏋️‍♂️ Daily Routine & Wellness Plan**  
+<unmodified output from `exercise_advice` — including any “top 1 Yoga Practice Websites” or “Top 1 Yoga Practice YouTube Videos” sections>
+
+Important:
+- Do NOT add, remove, or rephrase any lines.
+- Preserve bullet points, emojis, and any external‑links sections intact.
+""",
+    expected_output=(
+        "🏋️‍♂️ Daily Routine & Wellness Plan\n"
+        "<full, verbatim output of the exercise_advice tool, including Serper‑fetched links if available>"
+    ),
     agent=exercise_agent,
 )
+
 # cbc_trend_task = create_task(
 #         description="""
 #         You have the patient’s full blood report text:
@@ -151,10 +204,6 @@ verification = create_task(
     agent=verifier,
 )
 
-
-# NEW:
-# Added Celery task to support asynchronous processing.
-# This enables running longer analysis jobs without blocking FastAPI.
 @celery_app.task
 def process_blood_report(file_path: str, query: str):
     # Simulating a long-running task.

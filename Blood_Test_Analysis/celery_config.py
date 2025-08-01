@@ -1,10 +1,5 @@
 from celery import Celery
 import os
-
-# Load environment variables from .env file
-# This ensures we can configure Celery using variables like:
-# - CELERY_BROKER_URL
-# - CELERY_RESULT_BACKEND
 from dotenv import load_dotenv
 load_dotenv()
 

@@ -1,3 +1,4 @@
+
 from crewai import Crew
 from task import help_patients, nutrition_analysis, exercise_routine, abnormal_task, verification
 from agents import doctor, nutritionist, exercise_agent, abnormal_agent, verifier
@@ -79,7 +80,6 @@ def run_crew_pipeline(query: str, file_path: str) -> dict:
         tasks=[help_patients, abnormal_task, nutrition_analysis, exercise_routine],
         process="sequential",
     )
-
     # Default outputs
     outputs = {
         "doctor_report":    "No doctor analysis generated.",

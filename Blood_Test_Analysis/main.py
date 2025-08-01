@@ -6,16 +6,13 @@ import uuid
 from datetime import datetime
 import logging
 import pdfplumber
-
-# CHANGED: switched from original blocking crew logic to a modular pipeline
 from crew_runner import run_crew_pipeline  
 
-# NEW: integrated MongoDB for storing analysis results
-from database import reports_collection  # MongoDB collection (ensure it's async)
+from database import reports_collection  
 
 app = FastAPI(title="Blood Test Report Analyser")
 
-# NEW: added logging for better tracing and debugging
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 

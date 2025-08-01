@@ -1,3 +1,4 @@
+
 ## Importing libraries and files
 import os
 import crewai.tools
@@ -43,14 +44,6 @@ search_tool = SerperDevTool()
 # Import PDF loader from LangChain community library
 from langchain_community.document_loaders import PDFPlumberLoader
 
-
-## SCHEMA FOR BLOOD TEST REPORT TOOL
-# NEW:
-# Defines a schema for validating inputs to the BloodTestReportTool.
-# Currently unused in the tool itself, but could be useful for
-# future integrations with CrewAI or FastAPI validation.
-class BloodTestReportToolSchema(BaseModel):
-    file_path: str
 
 
 ## Creating custom pdf reader tool
@@ -133,196 +126,245 @@ class BloodReportSummaryTool(BaseTool):
         "Platelet Count":   "thrombocytopenia",
     }
 
-    def _run(self, report_text: str) -> str:
-        lines: List[str] = []
-        abnormal_details: List[str] = []
+    def _run(self, report_text: str) -> dict:
+        lines = []
+        abnormal_details = []
 
         for test_name, (low, high, unit) in self.RANGES.items():
-            pattern = rf"{test_name}\s*[:\-]?\s*([\d\.]+)"
-            m = re.search(pattern, report_text, re.IGNORECASE)
+            m = re.search(rf"{test_name}\s*[:\-]?\s*([\d\.]+)", report_text)
             if not m:
                 continue
-
             val = float(m.group(1))
-            ref = f"{low}–{high} {unit}"
 
             if val < low:
-                imp = self.IMPLICATIONS.get(test_name, "deficiency")
-                status = f"Low (→ suggests {imp})"
-                abnormal_details.append(f"{test_name} → {imp}")
+                status = "deficiency"
+                abnormal_details.append(f"{test_name} → {status}")
+                lines.append(f"- {test_name}: {val} {unit} (Ref: {low}–{high} {unit}) → Low (→ suggests {self.IMPLICATIONS.get(test_name,'deficiency')})")
             elif val > high:
-                status = "High"
-                abnormal_details.append(f"{test_name} → elevation")
+                status = "elevation"
+                abnormal_details.append(f"{test_name} → {status}")
+                lines.append(f"- {test_name}: {val} {unit} (Ref: {low}–{high} {unit}) → High")
             else:
-                status = "Normal"
+                lines.append(f"- {test_name}: {val} {unit} (Ref: {low}–{high} {unit}) → Normal")
 
-            lines.append(f"- {test_name}: {val} {unit} (Ref: {ref}) → {status}")
-
-        # Build the final summary
-        if not abnormal_details:
-            summary = "✅ All values are within normal ranges."
+        if abnormal_details:
+            summary_line = f"⚠️ Abnormal tests: {'; '.join(abnormal_details)}."
         else:
-            # List each abnormal test with its implication
-            details = "; ".join(abnormal_details)
-            summary = (
-                f"⚠️ Abnormal tests: {details}. "
-                "Please consult your physician for further evaluation."
-            )
+            summary_line = "✅ All values are within normal ranges."
 
-        return "\n".join(lines) + "\n\n" + summary
+        return {
+            "full_summary": "\n".join(lines),
+            "summary_line": summary_line,
+            # THIS list still holds the arrows & flags
+            "details": abnormal_details,
+        }
 
 class AbnormalInfoSearchTool(BaseTool):
     """
-    Parses abnormal test names from a blood report summary and returns the
-    corresponding Mount Sinai Health Library URL for each.
-    Input: full summary text from `blood_report_summary`.
+    take input from 'details' (which labels abnormalities as 'deficiency' or 'elevation') and returns the
+    corresponding Library URL for each.
+    Input: full summary text from `details`.
     Output: newline-separated lines of "TestName: URL".
     """
     name: str = "abnormal_info_search"
     description: str = (
-       "Given the output from 'blood_report_summary' (which labels abnormalities as 'deficiency' or 'elevation') "
+       "take input from 'details' (which labels abnormalities as 'deficiency' or 'elevation') " 
         "Library URL for each test."
     )
 
     # Static mapping of test names to Mount Sinai URLs
-    URL_MAP: Dict[str, str] = {
+    URL_MAP: Dict[str, str] ={
         "Hemoglobin": "https://www.mountsinai.org/health-library/tests/hemoglobin",
+        "Hemoglobin \(Hb\)": "https://www.mountsinai.org/health-library/tests/hemoglobin",
         "Hemoglobin (Hb)": "https://www.mountsinai.org/health-library/tests/hemoglobin",
-        "Packed Cell Volume (PCV)": "https://www.mountsinai.org/health-library/tests/hematocrit",
+        "Packed Cell Volume (PCV)": "https://labtestsonline.org.uk/tests/pcv",
+        "Packed Cell Volume \(PCV\)": "https://labtestsonline.org.uk/tests/pcv",
         "Hematocrit": "https://www.mountsinai.org/health-library/tests/hematocrit",
-        "RBC Count": "https://www.mountsinai.org/health-library/tests/red-blood-cell-count",
-        "Red Blood Cell Count": "https://www.mountsinai.org/health-library/tests/red-blood-cell-count",
-        "MCV": "https://www.mountsinai.org/health-library/tests/mean-corpuscular-volume-mcv",
-        "Mean Corpuscular Volume": "https://www.mountsinai.org/health-library/tests/mean-corpuscular-volume-mcv",
-        "MCH": "https://www.mountsinai.org/health-library/tests/mean-corpuscular-hemoglobin-mch",
-        "Mean Corpuscular Hemoglobin": "https://www.mountsinai.org/health-library/tests/mean-corpuscular-hemoglobin-mch",
-        "MCHC": "https://www.mountsinai.org/health-library/tests/mean-corpuscular-hemoglobin-concentration-mchc",
-        "Mean Corpuscular Hemoglobin Concentration": "https://www.mountsinai.org/health-library/tests/mean-corpuscular-hemoglobin-concentration-mchc",
-        "RDW": "https://www.mountsinai.org/health-library/tests/red-cell-distribution-width-rdw",
-        "Red Cell Distribution Width": "https://www.mountsinai.org/health-library/tests/red-cell-distribution-width-rdw",
-        "Total Leukocyte Count (TLC)": "https://www.mountsinai.org/health-library/tests/white-blood-cell-count-wbc",
-        "White Blood Cell Count": "https://www.mountsinai.org/health-library/tests/white-blood-cell-count-wbc",
-        "WBC": "https://www.mountsinai.org/health-library/tests/white-blood-cell-count-wbc",
-        "WBC Differential": "https://www.mountsinai.org/health-library/tests/white-blood-cell-differential",
-        "Neutrophils": "https://www.mountsinai.org/health-library/tests/white-blood-cell-differential",
-        "Lymphocytes": "https://www.mountsinai.org/health-library/tests/white-blood-cell-differential",
-        "Monocytes": "https://www.mountsinai.org/health-library/tests/white-blood-cell-differential",
-        "Eosinophils": "https://www.mountsinai.org/health-library/tests/white-blood-cell-differential",
-        "Basophils": "https://www.mountsinai.org/health-library/tests/white-blood-cell-differential",
-        "Platelet Count": "https://www.mountsinai.org/health-library/tests/platelet-count",
-        "Mean Platelet Volume": "https://www.mountsinai.org/health-library/tests/mean-platelet-volume-mpv",
+        "RBC Count": "https://www.mountsinai.org/health-library/tests/rbc-count",
+        "Red Blood Cell Count": "https://www.mountsinai.org/health-library/tests/rbc-count",
+        "MCV": "https://www.ncbi.nlm.nih.gov/books/NBK545275/",
+        "Mean Corpuscular Volume": "https://www.ncbi.nlm.nih.gov/books/NBK545275/",
+        "MCH": "https://www.ncbi.nlm.nih.gov/books/NBK545275/",
+        "Mean Corpuscular Hemoglobin": "https://www.ncbi.nlm.nih.gov/books/NBK545275/",
+        "MCHC": "https://www.medicalnewstoday.com/articles/321303",
+        "Mean Corpuscular Hemoglobin Concentration": "https://www.medicalnewstoday.com/articles/321303",
+        "RDW": "https://medlineplus.gov/lab-tests/rdw-red-cell-distribution-width/",
+        "Red Cell Distribution Width": "https://medlineplus.gov/lab-tests/rdw-red-cell-distribution-width/",
+        "Total Leukocyte Count (TLC)": "https://www.ncbi.nlm.nih.gov/books/NBK560882/",
+        "White Blood Cell Count": "https://medlineplus.gov/lab-tests/white-blood-count-wbc/",
+        "WBC": "https://medlineplus.gov/lab-tests/white-blood-count-wbc/",
+        "WBC Differential": "https://www.mountsinai.org/health-library/tests/blood-differential-test",
+        "Neutrophils": "https://my.clevelandclinic.org/health/body/22313-neutrophils",
+        "Lymphocytes": "https://www.mdanderson.org/cancerwise/what-level-of-lymphocytes-is-considered-dangerous.h00-159701490.html",
+        "Monocytes": "https://www.webmd.com/a-to-z-guides/what-to-know-about-high-monocyte-count",
+        "Eosinophils": "https://medlineplus.gov/ency/article/003649.htm",
+        "Basophils": "https://my.clevelandclinic.org/health/body/23256-basophils",
+        "Platelet Count": "https://my.clevelandclinic.org/health/diagnostics/21782-platelet-count",
+        "Mean Platelet Volume": "https://medlineplus.gov/lab-tests/mpv-blood-test/",
     }
 
-    def _run(self, summary_text: str) -> str:
-        # Extract the "Abnormal tests: ..." portion
-        match = re.search(r"Abnormal tests:\s*(.+?)(?:\.|$)", summary_text, re.IGNORECASE)
-        if not match:
+
+    def _run(self, details: List[str]) -> str:
+        if not details:
             return "No abnormalities found."
-
-        # Split out the test names
-        raw_entries = re.split(r"[;,]", match.group(1))
-        test_names = [e.strip().split("→")[0].strip() for e in raw_entries if e.strip()]
-
-        # Build results using the static map
         lines = []
-        for test in test_names:
-            url = self.URL_MAP.get(test)
-            if not url:
-                url = "No URL defined for this test"
+        for entry in details:
+            # split off the “→ …” to get the test name
+            test = entry.split("→")[0].strip()
+            url = self.URL_MAP.get(test, "No URL defined")
             lines.append(f"{test}: {url}")
-
         return "\n".join(lines)
 
 
-
-   
 ## Creating Nutrition Analysis Tool
 
 class NutritionAdviceTool(BaseTool):
     name: str = "nutrition_advice"
     description: str = (
-        "Given the output from 'blood_report_summary' (which labels abnormalities as 'deficiency' or 'elevation') "
-        "and the patient’s weight in kg, returns personalized nutrition advice only for those abnormal tests, plus protein requirements."
+        "take input from 'details' (which labels abnormalities as 'deficiency' or 'elevation') "
+        "returns personalized nutrition advice only for those abnormal tests"
     )
 
     # Suggestions for deficiencies
     LOW_SUGGESTIONS: ClassVar[Dict[str, str]] = {
-        "Hemoglobin": "iron-rich foods (spinach, lentils, red meat, fortified cereals); B₁₂ sources (eggs, dairy, fish); folate (leafy greens, beans)",
-        "Packed Cell Volume (PCV)": "same as Hemoglobin",
-        "RBC Count": "same as Hemoglobin",
-        "MCV": "iron, B₁₂ & folate; selenium & copper for RBC maturation",
-        "MCH": "iron-rich foods; vitamin C to enhance absorption",
-        "MCHC": "iron and vitamin C supplements",
-        "RDW": "multivitamin with B-complex, iron, copper",
-        "Total Leukocyte Count (TLC)": "protein-rich diet (lean meats, pulses); vitamins A/C/E; zinc (nuts, seeds)",
-        "Segmented Neutrophils": "vitamin A (carrots, sweet potato); B₆ (chickpeas); protein support",
-        "Lymphocytes": "vitamin D (sunlight, fortified milk); zinc (pumpkin seeds); vitamin C",
-        "Monocytes": "balanced diet with B-complex vitamins; lean protein",
-        "Eosinophils": "focus on overall nutrient balance; no specific foods",
-        "Basophils": "typical diet sufficient; focus on variety",
-        "Platelet Count": "vitamin K (leafy greens, broccoli); B₁₂ & folate; protein support",
-        "Mean Platelet Volume": "B₁₂ & folate; vitamin B₆",
+    "Hemoglobin": "iron-rich foods (spinach, lentils, red meat, fortified cereals); B₁₂ sources (eggs, dairy, fish); folate (leafy greens, beans)",
+    "Hemoglobin \(Hb\)": "iron-rich foods (spinach, lentils, red meat, fortified cereals); B₁₂ sources (eggs, dairy, fish); folate (leafy greens, beans)",
+    "Hemoglobin (Hb)": "iron-rich foods (spinach, lentils, red meat, fortified cereals); B₁₂ sources (eggs, dairy, fish); folate (leafy greens, beans)",
+    "Packed Cell Volume (PCV)": "iron (beetroot, jaggery); B₁₂ (milk, paneer); folate (green peas, chickpeas)",
+    "RBC Count": "iron (dates, ragi); B₁₂ (curd, cheese); folate (asparagus, black-eyed peas)",
+    "MCV": "iron (pumpkin seeds); B₁₂ (soy milk, mushrooms); folate (broccoli); selenium & copper (sunflower seeds, cashews)",
+    "MCH": "iron-rich foods (amaranth, tofu); vitamin C (citrus fruits, guava) to enhance absorption",
+    "MCHC": "iron (dry fruits, sesame); vitamin C (lemon, kiwi) for improved absorption",
+    "RDW": "multivitamin with B-complex (whole grains), iron (spinach), copper (dark chocolate, cashews)",
+    "Total Leukocyte Count (TLC)": "protein-rich foods (pulses, paneer); vitamins A (carrots), C (amla), E (almonds); zinc (pumpkin seeds)",
+    "Segmented Neutrophils": "vitamin A (sweet potato), B₆ (banana, chickpeas), and proteins (eggs, lentils)",
+    "Lymphocytes": "vitamin D (sunlight, fortified milk); zinc (flax seeds); vitamin C (capsicum, kiwi)",
+    "Monocytes": "lean protein (tofu, legumes); B-complex rich foods (millets, brown rice)",
+    "Eosinophils": "anti-inflammatory foods (berries, turmeric); balanced intake of proteins and greens",
+    "Basophils": "diverse diet with vegetables, fruits, grains, and nuts to ensure micronutrient sufficiency",
+    "Platelet Count": "vitamin K (spinach, kale); B₁₂ (soy products); folate (avocado); protein (dal, milk)",
+    "Mean Platelet Volume": "B₁₂ (fortified cereals); folate (cabbage); vitamin B₆ (pistachios, sunflower seeds)",
+    "Neutrophils": "Eat protein-rich foods, vitamin B12, folate, and zinc sources to support immune function."
     }
+
 
     # Suggestions for elevations
     HIGH_SUGGESTIONS: ClassVar[Dict[str, str]] = {
-        "Hemoglobin": "avoid excess iron supplements; stay well-hydrated; moderate red meat intake",
-        "Packed Cell Volume (PCV)": "maintain hydration; limit high-salt or high-protein loads",
-        "RBC Count": "hydration and balanced diet to prevent hemoconcentration",
-        "MCV": "boost B₁₂ & folate (eggs, liver, avocado); avoid excessive alcohol",
-        "MCH": "ensure balanced B₁₂ & folate; moderate iron intake",
-        "MCHC": "maintain hydration; balanced intake of healthy fats (olive oil, nuts)",
-        "RDW": "focus on balanced micronutrients; multivitamins as needed",
-        "Total Leukocyte Count (TLC)": "anti-inflammatory diet: omega-3 (fatty fish, chia); antioxidants (berries, green tea)",
-        "Segmented Neutrophils": "support with probiotics (yogurt, kefir); antioxidants (vitamin C fruits)",
-        "Lymphocytes": "reduce chronic inflammation: turmeric, ginger; green leafy vegetables",
-        "Monocytes": "anti-inflammatory foods: omega-3 (flaxseed, salmon); garlic; cumin",
-        "Eosinophils": "allergy-friendly diet: avoid histamine-rich foods (aged cheese, fermented); increase quercetin (apples)",
-        "Basophils": "low-histamine diet (fresh produce); vitamin C to stabilize mast cells",
-        "Platelet Count": "anti-inflammatory foods: berries, olive oil; reduce refined carbohydrates",
-        "Mean Platelet Volume": "balanced healthy fats (avocado, nuts); stay hydrated",
-    }
+    "Hemoglobin": "Stay hydrated; limit iron supplements and red meat intake if unnecessary.",
+    "Hemoglobin \(Hb\)":"Stay hydrated; limit iron supplements and red meat intake if unnecessary.",
+    "Hemoglobin (Hb)":"Stay hydrated; limit iron supplements and red meat intake if unnecessary.",
+    "Packed Cell Volume (PCV)": "Increase fluid intake; reduce high-iron foods and alcohol.",
+    "RBC Count": "Avoid excess iron; stay hydrated; monitor high-altitude or smoking habits.",
+    "MCV": "Check B₁₂ & folate sources; reduce supplements if taken in excess.",
+    "MCH": "Moderate iron intake; focus on balanced meals over supplementation.",
+    "MCHC": "Hydrate well and reduce intake of iron-fortified foods if elevated.",
+    "RDW": "Balance iron and vitamin B intake; avoid excessive multivitamin usage.",
+    "Total Leukocyte Count (TLC)": "Avoid inflammatory foods (processed, sugary); include anti-inflammatory items like berries, turmeric.",
+    "Segmented Neutrophils": "Reduce stress; include anti-inflammatory foods (green tea, leafy veggies).",
+    "Lymphocytes": "Avoid immune stimulants (excess garlic, echinacea); follow a calming, balanced diet.",
+    "Monocytes": "Limit red meat; include omega-3 rich foods (flaxseeds, walnuts).",
+    "Eosinophils": "Avoid allergens and processed foods; follow an anti-inflammatory diet.",
+    "Basophils": "Avoid high-histamine foods (aged cheese, wine); increase water and whole foods.",
+    "Platelet Count": "Avoid high-vitamin K foods in excess (e.g., kale, spinach); stay hydrated.",
+    "Mean Platelet Volume": "Reduce inflammatory foods; emphasize omega-3s and antioxidant-rich vegetables.",
+   "Neutrophils": "Include anti-inflammatory foods like berries, turmeric, leafy greens, and fatty fish; avoid processed and fried foods."
+}
 
-    def _run(self, summary_text: str, weight_kg: float) -> str:
-        """
-        summary_text: the text output from blood_report_summary
-        weight_kg: patient's weight in kilograms
-        Returns advice only for tests flagged 'deficiency' or 'elevation' and protein requirement.
-        """
+
+
+    def _run(
+        self,
+        summary_text: str,      # you can keep this for context or drop it if unused
+        details: list[str],     # the list of abnormal strings, e.g. ["Lymphocytes → elevation", ...]
+    ) -> str:
         advice_lines: list[str] = []
-        # Protein: 1.2 g per kg
-        protein_req = round(weight_kg * 1.2)
+
+        # 1️⃣ Protein requirement
+        
         advice_lines.append(
-            f"• Protein Intake: aim for approximately {protein_req} g per day from eggs, dairy, legumes, and lean meats."
+            f"• Protein Intake: aim for approximately your weight*1.2 gram per day from eggs, dairy, legumes, and lean meats."
         )
 
-        # Only parse abnormal lines (deficiency or elevation)
-        for line in summary_text.splitlines():
-            match = re.match(r"- ([^:]+): .*→\s*(deficiency|elevation)", line, re.IGNORECASE)
-            if not match:
-                continue
-
-            test_name = match.group(1).strip()
-            status_key = match.group(2).lower()
+        # 2️⃣ Iterate only over the provided abnormal details
+        for entry in details:
+            # split into test name and status
+            test_name, status_word = [p.strip() for p in entry.split("→", 1)]
+            status_key = "deficiency" if "deficiency" in status_word.lower() else "elevation"
 
             if status_key == "deficiency":
                 suggestion = self.LOW_SUGGESTIONS.get(test_name)
                 if suggestion:
                     advice_lines.append(f"• {test_name} deficiency: Increase intake of {suggestion}.")
                 else:
-                    advice_lines.append(f"• {test_name} deficiency: Consult your doctor for dietary guidance.")
+                    advice_lines.append(f"• {test_name} deficiency: Consult for dietary guidance.")
 
-            elif status_key == "elevation":
+            else:  # elevation
                 suggestion = self.HIGH_SUGGESTIONS.get(test_name)
                 if suggestion:
-                    advice_lines.append(f"• {test_name} elevation: Recommended dietary changes include {suggestion}.")
+                    advice_lines.append(f"• {test_name} elevation: Dietary changes include {suggestion}.")
                 else:
-                    advice_lines.append(f"• {test_name} elevation: Consult your doctor for dietary guidance.")
+                    advice_lines.append(f"• {test_name} elevation: Consult for dietary guidance.")
 
         return "\n".join(advice_lines)
 
 
 
+## Creating Exercise Planning Tool
+class ExerciseAdviceTool(BaseTool):
+    """
+    Provides general daily exercise and wellness suggestions,
+    plus top web and YouTube resources for yoga practice.
+    """
+    name: str = "exercise_advice"
+    description: str = (
+        "Suggests daily Pranayama, Yoga, gym workouts, jogging, sports, and mindfulness practices, "
+        "and fetches top web & YouTube links for yoga resources."
+    )
+
+    def _run(self) -> str:
+        suggestions = [
+            "• 🧘 Pranayama: 15 minutes daily of alternate nostril breathing (Nadi Shodhana) or Kapalabhati to improve lung function and calm the mind.",
+            "• 🧎 Yoga: 20–30 minutes of Sun Salutations (Surya Namaskar), Warrior poses, and gentle stretches to enhance flexibility and strength.",
+            "• 🏃 Cardio: 20–30 minutes of jogging, brisk walking, or cycling in the morning to boost cardiovascular health.",
+            "• 🏋️ Strength Training: 2–3 sessions per week, focusing on bodyweight exercises (push-ups, squats, lunges) or light gym workouts.",
+            "• 🤸‍♂️ Sports & Recreation: 1–2 fun sessions weekly (badminton, basketball, or swimming) for agility and endurance.",
+            "• 🧘‍♀️ Meditation: 5–10 minutes of mindfulness or guided meditation each evening to reduce stress and improve sleep quality.",
+            "• 💧 Hydration & Rest: Drink 2–3 liters of water daily, and ensure 7–8 hours of quality sleep every night for recovery."
+        ]
+
+        api_key = os.getenv("SERPER_API_KEY")
+        if not api_key:
+            suggestions.append("\n🔗 External resources not available — SERPER_API_KEY missing.")
+            return "\n".join(suggestions)
+
+        headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+
+        def fetch_one_link(query: str, label: str, retries: int = 2):
+            for attempt in range(retries + 1):
+                try:
+                    resp = requests.post(
+                        "https://api.serper.dev/search",
+                        headers=headers,
+                        json={"q": query, "num": 1},
+                        timeout=5,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    items = data.get("organic") or data.get("results") or []
+                    if items:
+                        url = items[0].get("link") or items[0].get("url")
+                        if url:
+                            suggestions.append(f"\n🔗 {label}: {url}")
+                        return
+                except Exception as e:
+                    logger.warning(f"[{label}] attempt {attempt + 1} failed: {e}")
+
+        fetch_one_link("top 1 best yoga websites", "Yoga Website")
+        fetch_one_link("top 1 best yoga YouTube video", "Yoga YouTube Video")
+
+        return "\n".join(suggestions)
+
+    
 
 class CBCTrendVisualizerTool(BaseTool):
     """
@@ -395,77 +437,7 @@ class CBCTrendVisualizerTool(BaseTool):
         return out_path
 
 
-## Creating Exercise Planning Tool
-class ExerciseAdviceTool(BaseTool):
-    """
-    Provides general daily exercise and wellness suggestions,
-    plus top web and YouTube resources for yoga practice.
-    """
-    name: str = "exercise_advice"
-    description: str = (
-        "Suggests daily Pranayama, Yoga, gym workouts, jogging, sports, and mindfulness practices, "
-        "and fetches top web & YouTube links for yoga resources."
-    )
 
-    def _run(self) -> str:
-        suggestions = [
-            "• 🧘 Pranayama: 15 minutes daily of alternate nostril breathing (Nadi Shodhana) or Kapalabhati to improve lung function and calm the mind.",
-            "• 🧎 Yoga: 20–30 minutes of Sun Salutations (Surya Namaskar), Warrior poses, and gentle stretches to enhance flexibility and strength.",
-            "• 🏃 Cardio: 20–30 minutes of jogging, brisk walking, or cycling in the morning to boost cardiovascular health.",
-            "• 🏋️ Strength Training: 2–3 sessions per week, focusing on bodyweight exercises (push-ups, squats, lunges) or light gym workouts.",
-            "• 🤸‍♂️ Sports & Recreation: 1–2 fun sessions weekly (badminton, basketball, or swimming) for agility and endurance.",
-            "• 🧘‍♀️ Meditation: 5–10 minutes of mindfulness or guided meditation each evening to reduce stress and improve sleep quality.",
-            "• 💧 Hydration & Rest: Drink 2–3 liters of water daily, and ensure 7–8 hours of quality sleep every night for recovery."
-        ]
-
-        api_key = os.getenv("SERPER_API_KEY")
-        if api_key:
-            headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
-            # Fetch top 5 websites for yoga practice
-            try:
-                resp = requests.post(
-                    "https://api.serper.dev/search",
-                    headers=headers,
-                    json={"q": "best yoga practice websites", "num": 5},
-                    timeout=5,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                items = data.get("organic") or data.get("results") or []
-                suggestions.append("\nTop 5 Yoga Practice Websites:")
-                for item in items[:5]:
-                    link = item.get("link") or item.get("url")
-                    suggestions.append(f"  - {link}")
-            except Exception as e:
-                logger.error(f"Error fetching yoga websites: {e}")
-
-            # Fetch top 5 YouTube videos for yoga practice
-            try:
-                resp = requests.post(
-                    "https://api.serper.dev/search",
-                    headers=headers,
-                    json={"q": "best yoga practice YouTube videos", "num": 5},
-                    timeout=5,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                items = data.get("organic") or data.get("results") or []
-                suggestions.append("\nTop 5 Yoga Practice YouTube Videos:")
-                for item in items[:5]:
-                    link = item.get("link") or item.get("url")
-                    suggestions.append(f"  - {link}")
-            except Exception as e:
-                logger.error(f"Error fetching yoga videos: {e}")
-        else:
-            suggestions.append("\n• SERPER_API_KEY not set; cannot fetch external links.")
-
-        return "\n".join(suggestions)
-
-
-
-# EXPORTED SYMBOLS
-# Declares all items that should be imported when doing:
-#     from tools import *
 __all__ = [
     "BloodTestReportTool",
     "AbnormalInfoSearchTool",
@@ -474,14 +446,3 @@ __all__ = [
     "ExerciseTool",
     "search_tool",
 ]
-
-# Quick test block
-if __name__ == "__main__":
-    # Quick test for the search tool
-    search_tool = SerperDevTool()
-    print(search_tool("What is anemia?"))
-
-    # Quick test of BloodTestReportTool (uncomment if you have a test file)
-    # tool = BloodTestReportTool()
-    # result = tool._run("data/sample.pdf")
-    # print(result)
